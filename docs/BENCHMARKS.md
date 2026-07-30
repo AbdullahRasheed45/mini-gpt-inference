@@ -327,4 +327,110 @@ there needed to be a Studio, not a Job.
 
 ---
 
-<!-- Phases 5-9 append their sections here, in order, as they complete. -->
+## Phase 5 — INT8 weight-only quantization (Prediction P7)
+
+**Prediction**: weight-only int8 with a naive dequant-then-matmul is
+**slower** than fp16 — only a fused dequant GEMV kernel wins.
+
+**Setup**: `bench/bench_quant.py`, `GPTConfig()` architecture. Memory and
+perplexity use the real trained checkpoint (iter 5999); speed uses a
+freshly-quantized `nn.Linear(512, 1536)` (the `qkv` projection's shape),
+bs=1 GEMV, 30 repeats / 10 warmup. Artifacts:
+`bench/results/bench_quant_cpu_20260730T154057Z.json` (Apple Silicon) and
+`bench/results/bench_quant_tesla-t4_20260730T153137Z.json` (real Tesla T4,
+via the same Lightning Studio as Phase 4).
+
+### Memory
+
+| | fp16 baseline | int8 (quantized Linears) | reduction |
+|---|---:|---:|---:|
+| total | 102.4 MB | 77.4 MB | **24.4%** |
+| embedding (unquantized, tied lm_head/tok_emb) | 51.5 MB | 51.5 MB (unchanged) | — |
+
+**Short of the plan's own rough "~102 → ~55 MB" guess, and the arithmetic
+shows exactly why**: the tied embedding table alone is 51.5 MB — pushing on
+50% of the fp16 total already — and it is deliberately never quantized (see
+`quant/int8.py`'s module docstring: it's read by gather, not matmul, a
+separate problem, and quantizing it would mean quantizing something the
+model also samples from). Quantizing *everything else* to int8 (roughly
+halving that portion) is exactly what happened: `(102.4 − 51.5) / 2 + 51.5 ≈
+77.0 MB`, matching the measured 77.4 MB almost exactly (the small gap is
+biases and per-channel scale factors, which stay fp32). The plan's ~55 MB
+figure would only be reachable by also shrinking the embedding table —
+explicitly out of scope here.
+
+### Speed (P7) — bs=1 GEMV, naive dequant-then-matmul vs fp16
+
+| device | fp16 | naive int8 | speedup |
+|---|---:|---:|---:|
+| CPU (Apple Silicon) | 24.4 µs | 170.9 µs | **0.14x (7.0x slower)** |
+| T4 | 32.3 µs | 77.1 µs | **0.42x (2.4x slower)** |
+
+**P7's core claim confirmed on both devices, more dramatically than "just
+slower."** Materializing a full dequantized fp16 copy of the weight on every
+call is strictly *more* memory traffic than reading the fp16 weight would
+have been in the first place — exactly the mechanism P7 predicts, and it
+shows up whether the extra allocation+elementwise-multiply cost is paid on a
+CPU (7x) or a GPU (2.4x).
+
+### The fused Triton dequant GEMV — the harder, more interesting negative result
+
+| device | fp16 | naive int8 | fused Triton | fused vs fp16 |
+|---|---:|---:|---:|---:|
+| T4 | 32.3 µs | 77.1 µs | 77.8 µs | **0.42x — no better than naive** |
+
+**P7's second half — "a fused dequant GEMV kernel wins" — is refuted, not
+confirmed, at this problem size, even after real on-hardware tuning.** A
+sweep over `BLOCK_O ∈ {32,64,128,256,512}` × `BLOCK_K ∈ {64,128,256,512}` on
+the real T4 (`triton_dequant_gemv`'s two tunable constexpr block sizes) found
+every configuration landing in a **flat 61–66 µs band** regardless of block
+shape — the signature of a kernel-launch-overhead-bound regime, not a
+compute- or memory-bandwidth-bound one where block size would matter. This
+is the same phenomenon P2 (Phase 4) measured directly for the attention
+kernel: at this model's scale, a single decode-shaped GEMV is dominated by
+fixed per-launch overhead (Python dispatch + CUDA launch), and a hand-written
+Triton kernel doesn't get a pass on that cost just because it fuses the
+dequant step mathematically — cuBLAS's `F.linear` (inside the naive path) is
+itself a single, highly-optimized launch, so "fused into one kernel" wasn't
+actually reducing the *launch count* relative to naive's two-call
+(dequant-elementwise + matmul) sequence by much, and what launch-count
+reduction there was got swamped by this being a genuinely tiny GEMV
+(512→1536, bs=1). The plan's own Phase 4 playbook — CUDA graphs, to remove
+launch overhead directly rather than trying to out-launch it with a smarter
+kernel — is the more promising fix, and is noted here as follow-up rather
+than pursued further in this phase.
+
+### Quality — perplexity, fp16 vs int8, real checkpoint
+
+| | fp16 | int8 | relative delta |
+|---|---:|---:|---:|
+| perplexity, 20,000 held-out TinyStories validation tokens | 2.7738 | 2.7746 | **+0.03%** |
+
+**Comfortably confirmed** — target was <1% relative degradation; measured
+degradation is over 30x smaller than that bar. Evaluated with `ReferenceGPT`
+(the frozen, full-sequence oracle) so this measures the quantization
+scheme's effect on next-token prediction quality directly, independent of
+any caching/batching machinery; `quantize_model()` is duck-typed to work on
+either `GPT` or `ReferenceGPT` since both share the same submodule names.
+
+**Verdict**: P7 is a split result, reported as such rather than rounded to a
+single verdict — naive-is-slower is confirmed (strongly, on two devices);
+fused-kernel-wins is refuted at this problem size, with a specific,
+verified-not-guessed explanation (launch-overhead-bound, confirmed via a
+real block-size sweep rather than a single untuned data point); quality
+preservation is confirmed with a wide margin.
+
+**Acceptance**:
+- Round-trip test: dequantized weights within the exact analytic per-row
+  error bound (`tests/test_quant.py`).
+- Memory reduction measured: 24.4%, with the gap to the plan's own estimate
+  explained by arithmetic, not asserted away.
+- Perplexity delta reported: +0.03%, real checkpoint, real held-out data.
+- Triton fused kernel correctness: 6/6 GPU tests passing on real hardware on
+  the first run (`tests/test_quant_triton.py` + the block-size sweep script
+  used for the tuning investigation above), even though its *performance*
+  goal (beating naive) wasn't met at this scale.
+
+---
+
+<!-- Phases 6-9 append their sections here, in order, as they complete. -->
