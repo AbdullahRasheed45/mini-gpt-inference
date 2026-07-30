@@ -84,9 +84,13 @@ def run_profiler_baseline(model: GPT, batch_size: int = 1, kv_length: int = KV_L
         torch.cuda.synchronize()
 
     events = prof.key_averages()
+    # torch renamed FunctionEventAvg's CUDA-specific fields to the
+    # device-generic self_device_time_total in newer releases (confirmed via
+    # a real run on this project's torch 2.8.0 -- self_cuda_time_total no
+    # longer exists at all, not just deprecated).
     cuda_events = [e for e in events if e.device_type == torch.profiler.DeviceType.CUDA]
     kernel_launch_count = sum(e.count for e in cuda_events)
-    total_cuda_time_us = sum(e.self_cuda_time_total for e in cuda_events)
+    total_cuda_time_us = sum(e.self_device_time_total for e in cuda_events)
 
     with torch.no_grad():
         timing = timeit_repeated(lambda: model(batch), device="cuda", warmup=10, repeats=30)
