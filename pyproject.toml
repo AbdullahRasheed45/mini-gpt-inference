@@ -24,6 +24,7 @@ server = [
 bench = [
     "matplotlib>=3.8",
     "pandas>=2.2",
+    "datasets>=2.19",        # bench_quant.py's held-out TinyStories perplexity slice
 ]
 gpu = [
     "triton>=2.3",
