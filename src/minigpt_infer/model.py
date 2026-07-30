@@ -156,6 +156,13 @@ class GPT(nn.Module):
         sample from next; Project A's training-time full-sequence logits (for
         computing loss against targets) has no equivalent here, since this
         project never trains anything.
+
+        Exception: `batch.return_all_logits=True` returns `(B, T, vocab)` --
+        every position's logits, not just the last. Only Phase 6's
+        speculative-decoding verification sets this (it must check each of
+        gamma+1 proposed positions against the target distribution that was
+        current when it was proposed); every other caller leaves it False and
+        sees no change in behavior.
         """
         # Skipped while a CUDA graph is capturing: evaluating this assert's
         # tensor comparison forces a device-to-host sync (`.item()`-like,
@@ -177,4 +184,4 @@ class GPT(nn.Module):
         for layer_idx, block in enumerate(self.blocks):
             x = block(x, layer_idx, batch)
         x = self.ln_f(x)
-        return self.lm_head(x[:, -1, :])
+        return self.lm_head(x if batch.return_all_logits else x[:, -1, :])

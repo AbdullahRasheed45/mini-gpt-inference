@@ -264,3 +264,66 @@ wherever it sits in the call stack — the assert doesn't have to be inside
 the "obviously graph-related" code (a cache) to break capture; it broke here
 from three call frames away, inside a completely generic, always-on safety
 check that every other phase relies on unmodified.
+
+---
+
+## 8. Speculative decoding: the two changes it needed from everything before it
+
+Phase 6 is the first phase to genuinely need something Phase 1's `ForwardBatch`
+didn't anticipate: verifying several draft tokens against a *non-empty* cache
+in one forward call. Two small, additive changes, both preserving every
+existing caller's behavior exactly:
+
+1. **`ForwardBatch.return_all_logits: bool = False`.** Every phase through 5
+   only ever needed the last position's logits (the next token to sample).
+   Verification needs logits at every one of the `gamma+1` proposed
+   positions, to check each draft token against the target distribution
+   that was current *when it was proposed* — not just the final one.
+   `model.py`'s forward returns `(B, T, vocab)` instead of `(B, vocab)` only
+   when this flag is set; every other caller leaves it `False` and sees no
+   change.
+2. **`ForwardBatch`'s decode assertion relaxed from "T must equal 1" to "T
+   can be >1, but only with an explicit `attn_mask`."** The original
+   assertion existed to catch a caller that meant to do ordinary
+   single-token decode but forgot something. Speculative verification
+   legitimately needs `T=gamma` (multiple new tokens continuing a non-empty
+   cache in one call) — `batch.build_speculative_verify_mask` builds the
+   required mask (full visibility into the cached prefix, causal only among
+   the new block), and the relaxed assertion still catches the original
+   mistake: multi-token decode *without* a mask still fails loudly.
+
+Both `StaticKVCache.write()`/`read()` already handled `T>1` writes into a
+non-empty cache correctly with no changes at all — they were only ever
+gated by `ForwardBatch`'s stricter assertion, not by any real limitation in
+the cache itself. This is the same "the abstraction was already general
+enough" story as Phase 3's paged cache needing zero changes to
+`CausalSelfAttention`.
+
+### The verification algorithm's bookkeeping, spelled out
+
+Each round carries `pending_logits` forward: the target's distribution for
+the position right after the cache's current end, computed as a byproduct
+of the *previous* round (or the initial prefill, for round one). Given
+`gamma` draft tokens, only `gamma` *new* target distributions need
+computing (not `gamma+1`) — combined with the carried-over `pending_logits`,
+that's `gamma+1` total, matching `verify_and_accept`'s contract. Whichever
+token is accepted last each round (the resample correction on rejection, or
+the bonus token if every draft token was accepted) was never written into
+the cache by the verification forward — only the `gamma` *draft* tokens
+were — so every round ends with exactly one more ordinary decode step to
+write it and produce the next round's `pending_logits`. This mirrors the
+paged engine's `cache.advance(num_accepted, ...)` pattern from Phase 3
+(rejected proposals stay physically written but logically ignored, and get
+overwritten next round) rather than needing any explicit "undo."
+
+### Why greedy exactness needs no special-casing
+
+Representing a distribution as one-hot at its argmax (`temperature<=0`) and
+feeding it through the *same* general `verify_and_accept` used for
+stochastic sampling reproduces plain greedy decoding exactly: a one-hot
+target `p` makes `min(1, p(x)/q(x))` either `1` (draft matches target's
+argmax → always accept) or `0` (draft differs → always reject), and the
+rejection residual `max(0, p-q)` collapses to a one-hot vector at the
+target's own argmax regardless of what the draft's distribution `q` looked
+like. `tests/test_spec_decode.py`'s greedy-exactness tests exercise this
+directly against `generation.greedy_generate_cached` across both drafters.

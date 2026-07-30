@@ -29,6 +29,16 @@ class ForwardBatch:
     slot_mapping: torch.Tensor | None = None  # (B*T,) int32, flat write index into pool
     seq_lens: torch.Tensor | None = None      # (B,) int32, tokens cached per seq
 
+    # Every prior phase only ever needed the LAST position's logits (the
+    # next token to sample). Phase 6's speculative-decoding verification
+    # needs logits at every one of the gamma+1 new positions in a single
+    # forward call, to check each proposed draft token against the target
+    # distribution that was current when it was proposed. Defaults to False
+    # so every existing caller's behavior (and model.py's forward signature)
+    # is unchanged -- this is strictly additive, per docs/PLAN.md §5's "the
+    # model signature must not change again after Phase 1."
+    return_all_logits: bool = False
+
     def __post_init__(self) -> None:
         assert self.input_ids.shape == self.position_ids.shape, (
             f"input_ids {tuple(self.input_ids.shape)} and position_ids "
@@ -37,7 +47,21 @@ class ForwardBatch:
         if self.is_prefill:
             assert self.input_ids.shape[1] >= 1
         else:
-            assert self.input_ids.shape[1] == 1, "decode batches must have T=1"
+            # T=1 is the common case (ordinary autoregressive decode). T>1 is
+            # valid too, but only for speculative decoding's verification
+            # step (docs/PLAN.md Phase 6): continuing a non-empty cache with
+            # gamma+1 new tokens in one forward call. That case requires an
+            # explicit attn_mask (see batch.build_speculative_verify_mask) --
+            # model.py's implicit is_causal branch only ever handles T==1 or
+            # a fresh-cache T==kv_len, not "T new tokens against an existing
+            # prefix." Requiring the mask here catches a caller that forgot
+            # it, which is exactly what this assertion existed to do before
+            # T>1 decode existed at all.
+            assert self.input_ids.shape[1] >= 1
+            if self.input_ids.shape[1] > 1:
+                assert self.attn_mask is not None, (
+                    "multi-token decode (speculative verification) requires an explicit attn_mask"
+                )
 
 
 def build_left_padded_batch(
@@ -173,3 +197,31 @@ def build_paged_decode_mask(
         torch.tensor(neg_inf, device=device, dtype=dtype),
     )
     return bias.unsqueeze(1).unsqueeze(1)  # (B, 1, 1, max_len)
+
+
+def build_speculative_verify_mask(
+    cache_len: int, num_new: int, dtype: torch.dtype, device: str | torch.device = "cpu",
+) -> torch.Tensor:
+    """attn_mask for speculative decoding's verification step (docs/PLAN.md
+    Phase 6): `num_new` = gamma+1 new tokens (gamma draft tokens plus the one
+    real token that anchors them) fed in ONE forward against a cache that
+    already holds `cache_len` real tokens.
+
+    Every new query position must see the *entire* cached prefix (all of it
+    is causally in the past) plus itself and any earlier new positions --
+    but not later new positions (those are still unverified proposals). This
+    is causal-among-the-new-block, offset by cache_len, not a fresh causal
+    mask from position 0 -- the ordinary is_causal=True path only covers
+    q_len==kv_len (a fresh prefill), which this isn't.
+    """
+    kv_len = cache_len + num_new
+    neg_inf = torch.finfo(dtype).min
+    row = torch.arange(num_new, device=device).unsqueeze(1)  # (num_new, 1)
+    col = torch.arange(kv_len, device=device).unsqueeze(0)   # (1, kv_len)
+    valid = col <= (cache_len + row)
+    bias = torch.where(
+        valid,
+        torch.tensor(0.0, device=device, dtype=dtype),
+        torch.tensor(neg_inf, device=device, dtype=dtype),
+    )
+    return bias.unsqueeze(0).unsqueeze(0)  # (1, 1, num_new, kv_len)
