@@ -1,0 +1,59 @@
+[project]
+name = "minigpt-infer"
+version = "0.1.0"
+description = "From-scratch LLM inference engine: KV cache, paged attention, continuous batching, CUDA graphs, speculative decoding"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Abdullah Rasheed" }]
+
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.24",
+    "tiktoken>=0.6",
+    "huggingface_hub>=0.24",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "prometheus-client>=0.20",
+]
+bench = [
+    "matplotlib>=3.8",
+    "pandas>=2.2",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "httpx>=0.27",          # FastAPI TestClient
+    "scipy>=1.12",          # chi-square test for speculative decoding
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# src/ layout. This is deliberate: Project A hit
+# "Multiple top-level packages discovered in a flat-layout" once bench/, tests/,
+# and notebooks/ coexisted at the root. An explicit src/ package root avoids
+# setuptools auto-discovery ambiguity entirely. Do not flatten this.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: requires CUDA; auto-skipped when unavailable",
+    "slow: takes >10s; excluded from default CI runs",
+]

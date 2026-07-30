@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # CPU-only torch wheel. The default PyPI wheel bundles CUDA (~2.5GB) and
+      # makes CI several minutes slower for no benefit -- these runners have no GPU.
+      - name: Install CPU torch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install package
+        run: pip install -e ".[dev,server]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      # GPU and slow tests are excluded: runners have no CUDA, and no test may
+      # depend on the private HF checkpoint (see docs/PLAN.md §9). Every
+      # correctness test builds a tiny random-init model instead.
+      - name: Test (pytest)
+        run: pytest -v -m "not gpu and not slow"

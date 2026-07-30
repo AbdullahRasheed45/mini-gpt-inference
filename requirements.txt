@@ -1,0 +1,25 @@
+# Mirrors pyproject.toml. Exists for the Kaggle / Lightning AI benchmark
+# notebooks, which pip-install from a file rather than the package.
+#
+# NOTE (lesson from Project A): an unpinned `torch>=2.4` is treated as already
+# satisfied by whatever the host image ships, so `pip install -r` will NOT
+# upgrade it. If a benchmark host has an older torch, upgrade it explicitly
+# (`pip install --upgrade torch`) or pin an exact version with
+# --force-reinstall. Do not assume this file changed the installed torch.
+
+# Core
+torch>=2.4
+numpy>=1.24
+tiktoken>=0.6
+huggingface_hub>=0.24
+
+# Server
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+prometheus-client>=0.20
+
+# Benchmarks / analysis
+matplotlib>=3.8
+pandas>=2.2
+scipy>=1.12
