@@ -219,3 +219,48 @@ number specifically to make this gap visible rather than hidden in a single
 speedup figure — the ceiling lands in the predicted 2-4x range even though
 the measured speedup doesn't yet, which is itself evidence that the
 *mechanism* works and the shortfall is overhead, not a broken idea.
+
+---
+
+## 7. CUDA graphs: two host-sync traps, both real, both found by running
+
+`graphs.py`'s `CUDAGraphRunner` and `attention/triton_paged.py` were written
+entirely without the ability to run or even syntax-check them locally (this
+dev machine has no CUDA device). Both worked essentially as designed once
+actually run on a T4 via Lightning; the one real design gap was a **second**
+host-sync, found only by letting the capture crash for real:
+
+1. **`StaticKVCache.write()`/`read()`'s `.item()`** (known from Phase 1) —
+   `CUDAGraphRunner` avoids this entirely by not reusing `StaticKVCache` for
+   the graph-captured path. Instead, `_FixedPositionCache` bakes the decode
+   position in as a plain Python int at construction time, since this
+   benchmark's whole point is many replays of the same shape/position, not
+   an advancing generation loop (see `graphs.py`'s module docstring).
+2. **`model.py`'s own bounds-check assert** —
+   `assert batch.position_ids.max() < self.cfg.block_size`. This looks like
+   pure Python/host code, but comparing a CUDA tensor to an int and
+   asserting on the result calls `Tensor.__bool__`, which is a
+   device-to-host sync exactly like `.item()` — and CUDA graph capture
+   forbids *any* sync inside the capturing region, full stop:
+   `torch.AcceleratorError: CUDA error: operation not permitted when stream
+   is capturing`. `_FixedPositionCache` was designed with (1) in mind and
+   missed (2) entirely, because the assert lives in `model.py`, not the
+   cache — it isn't the kind of thing that looks graph-related.
+
+   Fixed by skipping the assert specifically when
+   `torch.cuda.is_current_stream_capturing()` is true. This is safe, not a
+   weakened check: `CUDAGraphRunner.capture()` always runs several warmup
+   iterations in plain eager mode (outside any capturing stream) on the
+   *exact same* static `position_ids` buffer immediately before capture
+   begins, so the invariant is already verified on that tensor moments
+   earlier — skipping the redundant re-check during capture skips nothing
+   new.
+
+**The general lesson**: any tensor comparison that feeds a Python-level
+`assert`, `if`, or exception message (`f"... {t.item()} ..."`,
+`t.max() < x`, `bool(t)`, `len()` on a tensor-shaped condition) is a
+candidate host sync, and CUDA graph capture will refuse to record it
+wherever it sits in the call stack — the assert doesn't have to be inside
+the "obviously graph-related" code (a cache) to break capture; it broke here
+from three call frames away, inside a completely generic, always-on safety
+check that every other phase relies on unmodified.

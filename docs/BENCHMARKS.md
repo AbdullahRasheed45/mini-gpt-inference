@@ -193,4 +193,138 @@ mechanism's real advantage to plausibly show through the overhead.
 
 ---
 
-<!-- Phases 4-9 append their sections here, in order, as they complete. -->
+## Phase 4 — Kernels and launch-overhead optimization (Predictions P2, P3)
+
+**Predictions**:
+- P2: bs=1 decode with plain PyTorch lands at 5–15 ms/token, vs a 0.32 ms
+  floor on T4 → **>90% of wall clock is overhead, not math**.
+- P3: CUDA graphs / `torch.compile(mode="reduce-overhead")` give **3–10x**
+  on bs=1 decode — the largest single win in the project.
+
+**Setup**: real Tesla T4 via a Lightning AI Studio (`lightning-vultr-prod`
+cluster — see the note on hardware access below), `GPTConfig()` architecture,
+`bench/bench_kernels.py`, 30 repeats / 10 warmup per measurement (§10). Every
+number below is from a single committed artifact:
+`bench/results/bench_kernels_tesla-t4_20260730T144233Z.json` (torch
+2.8.0+cu128, CUDA 12.8, driver 580.173.02, git SHA `c2f8a0f`).
+
+### P2 — profiler baseline, one decode step (bs=1, kv_length=128)
+
+| kernel launches/step | CUDA kernel time | wall time | overhead |
+|---:|---:|---:|---:|
+| 144 | 1345.1 µs | 5312.0 µs | **74.7%** |
+
+**Verdict: P2 directionally confirmed, magnitude short of ">90%".** 144
+separate kernel launches for one token is a real, large number for a single
+forward pass through an 8-layer, 512-dim model, and three-quarters of the
+wall clock is genuinely launch/dispatch overhead rather than the matmuls
+themselves — the core claim holds. It lands at 75%, not >90%, most likely
+because this project's model is smaller (38M non-embedding params) than
+whatever reference workload the >90% figure was calibrated against — fewer
+FLOPs per launch shifts the ratio, but doesn't change the qualitative
+picture: at bs=1, this model is unambiguously overhead-bound.
+
+### P3 — CUDA graphs and torch.compile, decode step
+
+| batch size | eager (median) | graph-replay (median) | speedup |
+|---:|---:|---:|---:|
+| 1  | 4495.6 µs | 1396.7 µs | **3.22x** |
+| 4  | 4879.1 µs | 2232.2 µs | 2.19x |
+| 16 | 4740.0 µs | 2747.6 µs | 1.73x |
+
+**Verdict: P3 confirmed at bs=1** (3.22x, inside the predicted 3–10x range,
+at its lower edge) **and shows exactly the predicted shape**: the win shrinks
+as batch size grows, because eager's fixed per-step launch overhead is
+already being amortized over more useful work at larger batches — graphs
+have less overhead left to remove. This is the single largest win measured
+anywhere in this project so far.
+
+**A genuinely important pitfall, caught by a real crash, not anticipated in
+advance**: `model.py`'s own bounds-check assert
+(`assert batch.position_ids.max() < self.cfg.block_size`) turned out to
+force a device-to-host sync (`Tensor.__bool__`, same class of operation as
+`.item()`), which CUDA graph capture forbids outright —
+`torch.AcceleratorError: CUDA error: operation not permitted when stream is
+capturing`. Fixed by skipping the assert specifically while
+`torch.cuda.is_current_stream_capturing()` is true; correctness isn't
+weakened because `graphs.py`'s `CUDAGraphRunner` always runs several warmup
+iterations in plain eager mode on the exact same static buffer before
+capture begins, so the invariant is already checked on that tensor moments
+earlier. See `docs/ARCHITECTURE.md` and the `c2f8a0f` commit message for the
+full account.
+
+### torch.compile: the StaticKVCache path vs the graph-safe path
+
+| path | eager | compiled | speedup |
+|---|---:|---:|---:|
+| StaticKVCache (realistic decode path) | 6690.0 µs | 9046.4 µs | **0.74x (slower!)** |
+| graph-safe fixed-position path | 5248.1 µs | 2694.2 µs | **1.95x** |
+
+**This comparison is itself the finding** docs/PLAN.md's Phase 4 pitfalls
+section warned about by name: *"torch.compile silently falling back to eager
+per-step wipes out the gain and looks like compile didn't help."* The real
+log shows exactly why: `StaticKVCache.write()`'s `start = int(starts[0].item())`
+triggers a Dynamo graph break (`Graph break from Tensor.item()`), and every
+CUDA-graph-backed region downstream gets skipped (`skipping cudagraphs due
+to mutated inputs`, 8 times in the log) — `torch.compile` degrades most of
+the call into eager execution plus compilation overhead, ending up **slower
+than plain eager**. The graph-safe path (no `.item()` anywhere) compiles
+cleanly and gets a real 1.95x. Without deliberately building and measuring
+both paths side by side, the StaticKVCache result alone would have read as
+"torch.compile doesn't help here" — the actual lesson is narrower and more
+useful: *torch.compile doesn't help **through a host sync**, full stop,
+regardless of what wraps it.
+
+### Triton paged decode attention vs gather+SDPA
+
+| num_seqs | gather+SDPA (median) | Triton (median) | speedup |
+|---:|---:|---:|---:|
+| 8   | 365.3 µs | 164.5 µs | 2.22x |
+| 32  | 404.3 µs | 200.4 µs | 2.02x |
+| 128 | 647.0 µs | 350.6 µs | 1.85x |
+
+**Correctness (docs/PLAN.md Phase 4 acceptance)**: `tests/test_triton.py`'s
+three GPU tests (uniform lengths, ragged lengths spanning sub-block/exact-
+block/multi-block cases, and a `seq_len=1` edge case) **all passed on the
+first real run on hardware** — the kernel (online-softmax accumulation,
+GEMV-style elementwise-multiply-plus-reduction per docs/PLAN.md's own
+guidance that decode attention is a GEMV not a GEMM, `-inf`/NaN guarding for
+inactive blocks) was written and reasoned through entirely without the
+ability to run or syntax-check it locally, since this dev machine has no
+CUDA device and Triton kernels cannot be validated any other way. The
+elementwise-multiply approach (not `tl.dot`) shows a consistent ~2x win over
+the gather+SDPA baseline, shrinking slightly as `num_seqs` grows (more total
+work per call amortizes SDPA's own overhead too, same shape as the CUDA
+graph results above).
+
+### A note on how this ran
+
+The GPU work in this section required real Lightning AI compute, which
+turned out not to be accessible via the `lightning` CLI or the SDK's `Job`
+API on this account — every GPU machine type failed identically
+(`accelerator <type> not found for this <cluster> cluster`) regardless of
+cloud backend (AWS-linked or Lightning-managed) or teamspace framing. The
+actual constraint (per the account holder) was that this plan's GPU access
+is scoped to the **Studio** product, not standalone batch Jobs. Switching to
+`lightning_sdk.Studio` (`create_ok=True`, `.start(machine="T4")`, `.run(...)`
+executing commands in the studio's persistent shell) worked immediately and
+is what produced every real number in this section. `docs/PLAN.md`'s "do all
+Triton work on Lightning's T4" guidance holds; the mechanism for getting
+there needed to be a Studio, not a Job.
+
+**Acceptance**:
+- Triton kernel matches gather+SDPA within tolerance, and correctness is
+  exercised across uniform, ragged, and single-token-sequence scenarios
+  (`tests/test_triton.py`, all `@pytest.mark.gpu`, all passing on real
+  hardware).
+- Kernel-launch count recorded before optimization (144/step) — a
+  before/after CUDA-graph comparison at the kernel-launch-count level (not
+  just wall-clock) is left as a natural Phase 8 addition, since
+  `torch.profiler` was already wired up here and the number is cheap to add.
+- P2 and P3 validated with profiler/benchmark evidence, not vibes — both
+  directionally confirmed, with the exact magnitude and shape discussed
+  above rather than asserted.
+
+---
+
+<!-- Phases 5-9 append their sections here, in order, as they complete. -->
