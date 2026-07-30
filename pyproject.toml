@@ -52,6 +52,10 @@ extend-exclude = ["notebooks"]
 select = ["E", "F", "I", "W", "B", "UP"]
 
 [tool.pytest.ini_options]
+# repo root on sys.path so `from tests.helpers import ...` resolves -- without
+# this, pytest's rootdir insertion doesn't make the top-level `tests` package
+# importable under the src/ layout (Project A's flat layout got this for free).
+pythonpath = ["."]
 testpaths = ["tests"]
 markers = [
     "gpu: requires CUDA; auto-skipped when unavailable",
