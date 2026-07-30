@@ -145,3 +145,31 @@ def extend_decode_mask(
     else:
         bias = prompt_bias
     return bias.unsqueeze(1).unsqueeze(1)  # (B, 1, 1, new_kv_len)
+
+
+def build_paged_decode_mask(
+    seq_lens: torch.Tensor, max_len: int, dtype: torch.dtype
+) -> torch.Tensor:
+    """Decode-time attn_mask for a PagedKVCache read (docs/PLAN.md Phase 3).
+
+    Unlike Phase 2's left-padding (one fixed pad prefix shared across the
+    whole generation), continuous batching has each row's *own*, independent
+    seq_len -- PagedKVCache.read() always gathers `max_len` columns (the
+    batch's longest running sequence), so every shorter row has trailing
+    columns that are pool garbage (leftover bytes from a since-freed block)
+    and must be masked, not just conceptually padding.
+
+    `seq_lens`: (B,) int, this row's real cached length *after* this step's
+    write (i.e. the value used to size PagedKVCache.read()'s gather).
+    Returns (B, 1, 1, max_len).
+    """
+    device = seq_lens.device
+    neg_inf = torch.finfo(dtype).min
+    col = torch.arange(max_len, device=device).unsqueeze(0)  # (1, max_len)
+    valid = col < seq_lens.unsqueeze(1)  # (B, max_len)
+    bias = torch.where(
+        valid,
+        torch.tensor(0.0, device=device, dtype=dtype),
+        torch.tensor(neg_inf, device=device, dtype=dtype),
+    )
+    return bias.unsqueeze(1).unsqueeze(1)  # (B, 1, 1, max_len)

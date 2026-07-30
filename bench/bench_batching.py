@@ -19,7 +19,7 @@ from pathlib import Path
 
 import torch
 
-from bench.common import REPO_ROOT, save_json, timeit_repeated
+from bench.common import REPO_ROOT, default_results_path, save_json, timeit_repeated
 from minigpt_infer.config import GPTConfig
 from minigpt_infer.generation import batched_greedy_generate
 from minigpt_infer.model import GPT
@@ -130,12 +130,15 @@ def main() -> None:
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--repeats", type=int, default=30)
     ap.add_argument("--max-bs", type=int, default=256)
-    ap.add_argument("--out", type=Path, default=REPO_ROOT / "docs/benchmarks/bench_batching.json")
+    ap.add_argument(
+        "--out", type=Path, default=None, help="default: bench/results/<name>_<gpu>_<ts>.json",
+    )
     ap.add_argument("--plot", type=Path, default=REPO_ROOT / "docs/img/bench_batching.png")
     ap.add_argument("--no-plot", action="store_true")
     args = ap.parse_args()
     plot = None if args.no_plot else args.plot
-    run(args.device, args.warmup, args.repeats, args.max_bs, args.out, plot)
+    out = args.out if args.out is not None else default_results_path("bench_batching")
+    run(args.device, args.warmup, args.repeats, args.max_bs, out, plot)
 
 
 if __name__ == "__main__":

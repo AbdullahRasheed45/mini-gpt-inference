@@ -1,6 +1,7 @@
 """Shared benchmark harness -- implements docs/PLAN.md §10 once, reused by
-every bench/*.py script so every JSON artifact under docs/ was produced under
-the same rules (warmup, synchronize, median/IQR, full environment stamp).
+every bench/*.py script so every JSON artifact under bench/results/ was
+produced under the same rules (warmup, synchronize, median/IQR, full
+environment stamp).
 
 §10 rules encoded here:
   1. warm up >=10 iters before timing
@@ -19,6 +20,7 @@ from __future__ import annotations
 
 import json
 import platform
+import re
 import statistics
 import subprocess
 import time
@@ -33,10 +35,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def git_sha() -> str:
+    """Short SHA, with a "-dirty" suffix if the working tree has uncommitted
+    changes -- an SHA that silently ignores a dirty tree is worse than no SHA
+    at all (docs/PLAN.md §10 rule 8: never compare across code versions
+    without labeling the SHA; a clean-looking SHA on dirty code is a
+    mislabel)."""
     try:
-        return subprocess.check_output(
+        sha = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT, text=True
         ).strip()
+        dirty = subprocess.run(
+            ["git", "diff", "--quiet", "--ignore-submodules", "HEAD"], cwd=REPO_ROOT
+        ).returncode != 0
+        return f"{sha}-dirty" if dirty else sha
     except Exception:
         return "unknown"
 
@@ -153,3 +164,18 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
     full = {"env": env_info(), **payload}
     path.write_text(json.dumps(full, indent=2))
     print(f"wrote {path}")
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "-", text).strip("-").lower()
+
+
+def default_results_path(name: str) -> Path:
+    """docs/PLAN.md §10/§13: every benchmark writes JSON to
+    `bench/results/<name>_<gpu>_<timestamp>.json` -- one canonical location
+    and naming scheme so `bench/plot.py` and `scripts/run_all_benchmarks.py`
+    (Phase 8) can discover every artifact without a registry.
+    """
+    device_tag = _slug(env_info()["gpu_name"] or "cpu")
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return REPO_ROOT / "bench" / "results" / f"{name}_{device_tag}_{timestamp}.json"
