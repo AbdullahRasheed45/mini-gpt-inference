@@ -1,9 +1,20 @@
 """GPT model, ported from Project A (mini-gpt-ddp/model.py).
 
-This file starts as a verbatim port (committed alone, before any modification)
-and becomes cache-aware in Phase 1: forward() takes a ForwardBatch and supports
-prefill (T>1, full causal) and decode (T=1, attend over cached KV) separately.
-See docs/PLAN.md §5 and §7 (Phase 1) for the exact interface and pitfalls.
+Phase 0 committed this as a verbatim port. This (Phase 1) is the cache-aware
+rewrite: forward() now takes a ForwardBatch instead of a raw idx tensor, and
+supports prefill (T>1, into an empty cache) and decode (T=1, attending over
+previously-cached KV) as two distinct attention paths. See docs/PLAN.md §5 and
+§7 (Phase 1) for the exact interface this was designed against.
+
+The single most important pitfall this file's attention forward encodes
+(docs/PLAN.md, Phase 1 pitfalls): SDPA's `is_causal=True` is only correct when
+q_len == kv_len (a fresh prefill into an empty cache). PyTorch aligns the
+causal mask to the *top-left* when q_len != kv_len, so a naive
+`is_causal=True` decode step (q_len=1, kv_len=L) masks out every cached key
+except position 0 -- silently, with no error, no crash, no NaN. It just
+produces attention over one token instead of all of them. That specific bug
+does not exist in this file; see the `is_causal = (kv_len == q_len)` line
+below and its accompanying assert.
 
 Design notes inherited from Project A (T4-specific):
 - Attention uses torch.nn.functional.scaled_dot_product_attention (SDPA).
@@ -18,6 +29,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from minigpt_infer.batch import ForwardBatch
 from minigpt_infer.config import GPTConfig
 
 
@@ -32,19 +44,48 @@ class CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(cfg.n_embd, cfg.n_embd, bias=cfg.bias)
         self.dropout = cfg.dropout
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, layer_idx: int, batch: ForwardBatch) -> torch.Tensor:
         B, T, C = x.shape
         q, k, v = self.qkv(x).split(C, dim=2)
         # (B, T, C) -> (B, n_head, T, head_dim)
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        # SDPA dispatches to the best kernel available on the device
-        y = F.scaled_dot_product_attention(
-            q, k, v,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=True,
-        )
+
+        if batch.cache is not None:
+            batch.cache.write(layer_idx, k, v, batch)
+            k, v = batch.cache.read(layer_idx, batch)
+            # k, v: (B, n_head, kv_len, head_dim) where kv_len = tokens cached
+            # so far INCLUDING the ones just written above.
+
+        dropout_p = self.dropout if self.training else 0.0
+
+        if batch.attn_mask is not None:
+            # Phase 2+: an explicit combined causal+padding mask was built by
+            # the caller. is_causal and attn_mask are mutually exclusive in
+            # SDPA -- pass only the mask.
+            y = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=batch.attn_mask, dropout_p=dropout_p, is_causal=False,
+            )
+        else:
+            kv_len, q_len = k.shape[2], q.shape[2]
+            is_causal = kv_len == q_len
+            if not is_causal:
+                # kv_len > q_len means this is a decode step against a
+                # non-empty cache. Every cached position (0..kv_len-1) is
+                # causally at-or-before the new query token by construction
+                # (nothing has been written for a position that doesn't yet
+                # exist), so the query may attend to all of them -- no mask
+                # needed. What it must NOT do is pass is_causal=True here;
+                # see the module docstring.
+                assert q_len == 1, (
+                    f"non-causal attention without an explicit mask requires q_len==1 "
+                    f"(a single decode step); got q_len={q_len}, kv_len={kv_len}. "
+                    "Chunked prefill into a non-empty cache needs an explicit mask "
+                    "and is out of scope (docs/PLAN.md §12)."
+                )
+            y = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=is_causal)
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.proj(y)
 
@@ -68,8 +109,8 @@ class Block(nn.Module):
         self.ln2 = nn.LayerNorm(cfg.n_embd, bias=cfg.bias)
         self.mlp = MLP(cfg)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x))   # pre-norm residual, GPT-2 style
+    def forward(self, x: torch.Tensor, layer_idx: int, batch: ForwardBatch) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), layer_idx, batch)   # pre-norm residual, GPT-2 style
         x = x + self.mlp(self.ln2(x))
         return x
 
@@ -78,6 +119,7 @@ class GPT(nn.Module):
     def __init__(self, cfg: GPTConfig):
         super().__init__()
         self.cfg = cfg
+        self.head_dim = cfg.n_embd // cfg.n_head
         self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.n_embd)
         self.pos_emb = nn.Embedding(cfg.block_size, cfg.n_embd)
         self.drop = nn.Dropout(cfg.dropout)
@@ -107,39 +149,21 @@ class GPT(nn.Module):
             n -= self.pos_emb.weight.numel()
         return n
 
-    def forward(self, idx: torch.Tensor, targets: torch.Tensor | None = None):
-        B, T = idx.shape
-        assert T <= self.cfg.block_size, f"sequence length {T} > block_size {self.cfg.block_size}"
-        pos = torch.arange(T, device=idx.device)
-        x = self.drop(self.tok_emb(idx) + self.pos_emb(pos))
-        for block in self.blocks:
-            x = block(x)
+    def forward(self, batch: ForwardBatch) -> torch.Tensor:
+        """Returns logits at the LAST position only, shape (B, vocab) --
+        whether this call is a prefill or a decode step. An inference engine
+        never needs logits at any position except the one it's about to
+        sample from next; Project A's training-time full-sequence logits (for
+        computing loss against targets) has no equivalent here, since this
+        project never trains anything.
+        """
+        assert batch.position_ids.max() < self.cfg.block_size, (
+            f"position {batch.position_ids.max().item()} >= block_size="
+            f"{self.cfg.block_size} (the learned position embedding table "
+            f"only has block_size rows; there is nothing to index past it)"
+        )
+        x = self.drop(self.tok_emb(batch.input_ids) + self.pos_emb(batch.position_ids))
+        for layer_idx, block in enumerate(self.blocks):
+            x = block(x, layer_idx, batch)
         x = self.ln_f(x)
-
-        if targets is not None:
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                targets.view(-1),
-                ignore_index=-1,
-            )
-            return logits, loss
-        # inference: only compute logits for the final position
-        logits = self.lm_head(x[:, [-1], :])
-        return logits, None
-
-    @torch.no_grad()
-    def generate(self, idx: torch.Tensor, max_new_tokens: int,
-                 temperature: float = 1.0, top_k: int | None = None) -> torch.Tensor:
-        """Naive sampling loop -- no KV cache. See reference.py: this is the oracle."""
-        self.eval()
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.cfg.block_size:]
-            logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / max(temperature, 1e-6)
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float("inf")
-            probs = F.softmax(logits, dim=-1)
-            idx = torch.cat([idx, torch.multinomial(probs, 1)], dim=1)
-        return idx
+        return self.lm_head(x[:, -1, :])

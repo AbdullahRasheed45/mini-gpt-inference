@@ -1,9 +1,15 @@
-"""Phase 0: the oracle is internally consistent, and model.GPT == reference.ReferenceGPT
-for identical weights (rung 1 of the correctness ladder, docs/PLAN.md §8)."""
+"""Phase 0: the oracle (reference.ReferenceGPT) is internally consistent.
+
+The model.GPT vs. ReferenceGPT cross-check (rung 1 of the correctness ladder,
+docs/PLAN.md §8) lives in test_cache.py, not here: as of Phase 1, model.GPT's
+forward() takes a ForwardBatch instead of a raw idx tensor, so a same-weights
+comparison has to go through the cache-aware interface to mean anything.
+ReferenceGPT itself is frozen and never changes (see reference.py's module
+docstring), so its own tests stay here permanently.
+"""
 
 import torch
 
-from minigpt_infer.model import GPT
 from minigpt_infer.reference import ReferenceGPT
 from minigpt_infer.tokenizer import padding_vocab_mask
 from tests.helpers import tiny_gpt_config
@@ -51,24 +57,3 @@ def test_padding_vocab_mask_shape_and_content():
     assert not mask[50256]  # last real GPT-2 id (EOT) must NOT be masked
     assert mask[50257]      # first padding row must be masked
     assert mask[50303]      # last padding row must be masked
-
-
-def test_model_and_reference_are_logit_identical_given_same_weights():
-    """model.GPT (Phase 0, verbatim port) and reference.ReferenceGPT are
-    structurally identical modules -- loading model.GPT's state_dict into
-    ReferenceGPT must produce bit-identical logits for the same input. This
-    is the test every future model.py optimization gets compared against.
-    """
-    cfg = tiny_gpt_config()
-    torch.manual_seed(42)
-    model = GPT(cfg)
-    ref = ReferenceGPT(cfg)
-    ref.load_state_dict(model.state_dict())
-
-    idx = torch.randint(0, cfg.vocab_size, (2, 8))
-    model_logits, _ = model(idx)
-    ref_logits = ref(idx)[:, -1:, :]  # model.GPT only returns the last position w/o targets
-
-    assert torch.allclose(model_logits, ref_logits, atol=1e-5), (
-        (model_logits - ref_logits).abs().max().item()
-    )

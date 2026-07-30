@@ -11,8 +11,9 @@ import os
 
 import torch
 
+from minigpt_infer.generation import sample_generate_cached
 from minigpt_infer.loader import DEFAULT_CKPT_PATH, DEFAULT_REPO_ID, load_model
-from minigpt_infer.tokenizer import decode, encode
+from minigpt_infer.tokenizer import decode, encode, padding_vocab_mask
 
 
 def main() -> None:
@@ -31,8 +32,12 @@ def main() -> None:
     print(f"checkpoint iter: {meta.get('iter')}")
     print(f"params (non-pos-emb): {model.num_params() / 1e6:.1f}M")
 
+    mask = padding_vocab_mask(cfg.vocab_size, device=device)
     idx = torch.tensor([encode(args.prompt)], device=device)
-    out = model.generate(idx, max_new_tokens=args.max_new_tokens, temperature=0.8, top_k=50)
+    out = sample_generate_cached(
+        model, idx, max_new_tokens=args.max_new_tokens,
+        temperature=0.8, top_k=50, vocab_mask=mask,
+    )
     print("sample:", decode(out[0].tolist()))
 
 
