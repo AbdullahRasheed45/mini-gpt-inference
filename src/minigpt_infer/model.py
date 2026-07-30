@@ -157,11 +157,22 @@ class GPT(nn.Module):
         computing loss against targets) has no equivalent here, since this
         project never trains anything.
         """
-        assert batch.position_ids.max() < self.cfg.block_size, (
-            f"position {batch.position_ids.max().item()} >= block_size="
-            f"{self.cfg.block_size} (the learned position embedding table "
-            f"only has block_size rows; there is nothing to index past it)"
-        )
+        # Skipped while a CUDA graph is capturing: evaluating this assert's
+        # tensor comparison forces a device-to-host sync (`.item()`-like,
+        # via Tensor.__bool__), which CUDA graph capture forbids outright
+        # ("operation not permitted when stream is capturing" -- confirmed
+        # on real hardware, not a hypothetical). Graph capture in graphs.py
+        # always runs warmup iterations in plain eager mode first, which
+        # already exercises this exact check on the exact same static
+        # position_ids buffer, so skipping it only during the capturing
+        # window itself does not skip the check -- it just skips re-checking
+        # something already verified moments earlier on the same tensor.
+        if not (torch.cuda.is_available() and torch.cuda.is_current_stream_capturing()):
+            assert batch.position_ids.max() < self.cfg.block_size, (
+                f"position {batch.position_ids.max().item()} >= block_size="
+                f"{self.cfg.block_size} (the learned position embedding table "
+                f"only has block_size rows; there is nothing to index past it)"
+            )
         x = self.drop(self.tok_emb(batch.input_ids) + self.pos_emb(batch.position_ids))
         for layer_idx, block in enumerate(self.blocks):
             x = block(x, layer_idx, batch)
