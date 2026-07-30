@@ -25,6 +25,9 @@ bench = [
     "matplotlib>=3.8",
     "pandas>=2.2",
 ]
+gpu = [
+    "triton>=2.3",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

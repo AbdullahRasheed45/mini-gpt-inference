@@ -23,3 +23,7 @@ prometheus-client>=0.20
 matplotlib>=3.8
 pandas>=2.2
 scipy>=1.12
+
+# GPU-only (Linux+CUDA; do not install on the macOS dev machine) -- Phase 4's
+# Triton paged-attention kernel. `pip install -e ".[gpu]"` on the target GPU host.
+# triton>=2.3
