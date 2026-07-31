@@ -1,0 +1,16 @@
+{
+  "id": "abdullahrasheed4500/mini-gpt-inference-bench-hardware",
+  "title": "mini-gpt-inference bench_hardware (P9)",
+  "code_file": "kaggle_entry.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "machine_shape": "GPU_T4X2",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
