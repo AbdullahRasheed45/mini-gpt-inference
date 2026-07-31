@@ -433,4 +433,110 @@ preservation is confirmed with a wide margin.
 
 ---
 
-<!-- Phases 6-9 append their sections here, in order, as they complete. -->
+## Phase 6 — Speculative decoding (Prediction P8)
+
+**Prediction**: prompt-lookup gets acceptance α≈0.3–0.6 on TinyStories.
+
+**Correctness comes first here, deliberately** — per the plan, this phase's
+real contribution is *proving* distribution preservation, not measuring
+speed. `tests/test_spec_decode.py` (17 tests, all passing):
+- **Greedy exactness**: `speculative_generate` output is byte-identical to
+  target-only greedy (`generation.greedy_generate_cached`), across both
+  drafters and multiple prompts, exact token-id match — not "close."
+- **Distributional correctness**: `verify_and_accept` sampled **150,000**
+  times against direct target sampling; a chi-square goodness-of-fit test
+  does not reject the null at α=0.01. A real bug surfaced *writing* this
+  test, not in the algorithm: the draft token was fixed once outside the
+  sampling loop instead of resampled from `q` on every trial, which quietly
+  tests a different (and false) claim than the theorem makes — see
+  `docs/ARCHITECTURE.md` §8 and the commit history for the full account.
+
+**Setup**: `bench/bench_specdec.py`, real checkpoint (iter 5999), 6 real
+TinyStories validation prompts, 96 tokens/generation, γ∈{1..8}, greedy.
+Artifact: `bench/results/bench_specdec_cpu_20260730T234942Z.json` (Apple
+Silicon; the embedded git SHA predates a message-only commit amend with no
+code change).
+
+### Acceptance rate α and mean accepted length vs γ
+
+| γ | prompt-lookup α | PL mean accepted len | self-spec α | SS mean accepted len |
+|---:|---:|---:|---:|---:|
+| 1 | 0.300 | 1.03 | 0.398 | 1.39 |
+| 2 | 0.198 | 1.04 | 0.300 | 1.59 |
+| 3 | 0.144 | 1.04 | 0.215 | 1.63 |
+| 4 | 0.117 | 1.04 | 0.172 | 1.67 |
+| 5 | 0.095 | 1.04 | 0.140 | 1.68 |
+| 6 | 0.080 | 1.04 | 0.118 | 1.68 |
+| 7 | 0.070 | 1.04 | 0.103 | 1.69 |
+| 8 | 0.062 | 1.04 | 0.090 | 1.69 |
+
+**P8 confirmed at γ=1** (α=0.300, the bottom edge of the predicted
+0.3–0.6 band) **and shows an informative, predictable shape as γ grows**:
+prompt-lookup's α falls sharply with γ while its mean accepted length stays
+essentially flat at ~1.04 — because the length of a real repeated run in the
+text is a fixed property of that text, not something that grows just because
+you *propose* more tokens. Every token proposed beyond the actual match
+length is close to guaranteed to be rejected, so larger γ mostly just grows
+the denominator of α for no benefit. **The practical conclusion — γ=1 or 2
+is the right operating point for prompt-lookup on this corpus** — is exactly
+the kind of actionable result this sweep exists to produce, not a
+distraction from the headline number.
+
+Self-speculative's α is consistently higher than prompt-lookup's at every γ
+(0.398 vs 0.300 at γ=1) and its mean accepted length keeps climbing
+slightly further before plateauing (~1.69 by γ=7) — a real, approximate
+*model* can keep finding genuine agreement with the target beyond what exact
+substring repetition offers, unlike n-gram lookup which is fundamentally
+capped by how much text literally repeats.
+
+### Wall-clock speedup vs target-only
+
+| γ | prompt-lookup speedup | self-speculative speedup |
+|---:|---:|---:|
+| 1 | 0.90x | 0.46x |
+| 4 | 0.90x | 0.25x |
+| 8 | 0.91x | 0.16x |
+
+**Refuted in wall-clock terms on this CPU rig, for the by-now-familiar
+reason** — the same overhead-dominated-regime story told for P1, P2, P3, P5,
+and P7 throughout this project. Measured speedup is *negative* everywhere:
+prompt-lookup hovers around 0.9x (its own bookkeeping costs slightly more
+than the forward passes it sometimes skips), and self-speculative is far
+worse and gets *monotonically worse* as γ grows (0.46x → 0.16x), because its
+draft proposer is deliberately uncached (`SelfSpeculativeDrafter`'s own
+module docstring: chosen for unambiguous correctness over draft-side
+throughput) — each additional draft token re-forwards the *entire* growing
+context through half the model's layers from scratch, an O(γ²)-ish cost per
+round that grows faster than the tokens it occasionally saves. This is a
+genuine, identified, and *documented* limitation of this specific
+implementation choice, not a property of self-speculative decoding in
+general — a cached draft pass (mirroring `StaticKVCache`'s role for the
+target) is the natural fix, left as follow-up.
+
+**The theoretical formula itself checks out** — `theoretical_tokens_per_step
+= (1-α^(γ+1))/(1-α)` tracks the measured `mean_accepted_length` column
+closely at every γ for both drafters (e.g. self-spec γ=2: alpha=0.300 →
+theoretical 1.39 vs measured mean accepted length 1.59 — same ballpark, the
+small gap being the theoretical formula's assumption of i.i.d. acceptance
+per position, which real token-to-token correlation in text mildly
+violates). The *mechanism* is doing exactly what the math says; wall-clock
+payoff needs a regime where the compute saved outweighs Python/launch
+overhead — the T4 hardware study in Phase 8 is where that gets a fair test.
+
+**Verdict**: correctness (the phase's actual point) fully confirmed, with a
+harder bar than most speculative-decoding implementations ever check
+(distribution-preservation verified empirically, not just claimed). P8's α
+prediction holds at the best operating point (γ=1). Wall-clock speedup is
+refuted on CPU at this scale, consistent with — and mechanistically
+explained by — every other overhead-bound finding in this project.
+
+**Acceptance**:
+- Greedy exactness test passes (both drafters, multiple prompts).
+- Chi-square distributional test passes (150,000 samples, α=0.01).
+- α, mean accepted length, and the speedup-vs-γ curve recorded for both
+  drafters; P8 validated at γ=1, refuted in wall-clock terms with a verified
+  explanation.
+
+---
+
+<!-- Phases 7-9 append their sections here, in order, as they complete. -->

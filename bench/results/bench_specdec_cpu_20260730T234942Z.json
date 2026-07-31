@@ -1,0 +1,346 @@
+{
+  "env": {
+    "git_sha": "0792b31",
+    "torch_version": "2.13.0",
+    "python_version": "3.12.13",
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "cuda_available": false,
+    "cuda_version": null,
+    "gpu_name": null,
+    "driver_version": null
+  },
+  "benchmark": "bench_specdec",
+  "available": true,
+  "prediction": "P8",
+  "prediction_text": "Prompt-lookup gets acceptance alpha~=0.3-0.6 on TinyStories.",
+  "config": {
+    "checkpoint_iter": 5999,
+    "max_new_tokens": 96,
+    "num_prompts": 6,
+    "prompt_len": 12,
+    "self_spec_draft_layers": 4,
+    "device": "cpu",
+    "warmup": 1,
+    "repeats": 3
+  },
+  "baseline_target_only": {
+    "samples_s": [
+      1.0012217079056427,
+      0.9913361250655726,
+      0.9913996659452096
+    ],
+    "median_s": 0.9913996659452096,
+    "iqr_s": 0.009885582840070128,
+    "min_s": 0.9913361250655726,
+    "max_s": 1.0012217079056427,
+    "max_memory_bytes": null
+  },
+  "prompt_lookup": {
+    "1": {
+      "acceptance_rate": 0.3,
+      "mean_accepted_length": 1.032258064516129,
+      "theoretical_tokens_per_step": 1.3,
+      "num_rounds": 558,
+      "timing": {
+        "samples_s": [
+          1.1042591660516337,
+          1.103257333044894,
+          1.1077247500652447
+        ],
+        "median_s": 1.1042591660516337,
+        "iqr_s": 0.004467417020350695,
+        "min_s": 1.103257333044894,
+        "max_s": 1.1077247500652447,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.8977961844682149
+    },
+    "2": {
+      "acceptance_rate": 0.1981981981981982,
+      "mean_accepted_length": 1.03971119133574,
+      "theoretical_tokens_per_step": 1.2374807239672103,
+      "num_rounds": 554,
+      "timing": {
+        "samples_s": [
+          1.1510348750744015,
+          1.1503914589993656,
+          1.1549553329823539
+        ],
+        "median_s": 1.1510348750744015,
+        "iqr_s": 0.004563873982988298,
+        "min_s": 1.1503914589993656,
+        "max_s": 1.1549553329823539,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.8613115791831474
+    },
+    "3": {
+      "acceptance_rate": 0.14375,
+      "mean_accepted_length": 1.0415913200723328,
+      "theoretical_tokens_per_step": 1.167384521484375,
+      "num_rounds": 553,
+      "timing": {
+        "samples_s": [
+          1.1275489169638604,
+          1.1236793329007924,
+          1.1207596249878407
+        ],
+        "median_s": 1.1236793329007924,
+        "iqr_s": 0.00678929197601974,
+        "min_s": 1.1207596249878407,
+        "max_s": 1.1275489169638604,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.8822798790700358
+    },
+    "4": {
+      "acceptance_rate": 0.11650485436893204,
+      "mean_accepted_length": 1.0434782608695652,
+      "theoretical_tokens_per_step": 1.1318438369220762,
+      "num_rounds": 552,
+      "timing": {
+        "samples_s": [
+          1.1027553329477087,
+          1.1013781249057502,
+          1.1038549159420654
+        ],
+        "median_s": 1.1027553329477087,
+        "iqr_s": 0.0024767910363152623,
+        "min_s": 1.1013781249057502,
+        "max_s": 1.1038549159420654,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.8990205137300574
+    },
+    "5": {
+      "acceptance_rate": 0.09486166007905138,
+      "mean_accepted_length": 1.0434782608695652,
+      "theoretical_tokens_per_step": 1.1048026883877182,
+      "num_rounds": 552,
+      "timing": {
+        "samples_s": [
+          1.0963270410429686,
+          1.0952287910040468,
+          1.103893082938157
+        ],
+        "median_s": 1.0963270410429686,
+        "iqr_s": 0.008664291934110224,
+        "min_s": 1.0952287910040468,
+        "max_s": 1.103893082938157,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.9042919027173328
+    },
+    "6": {
+      "acceptance_rate": 0.0802675585284281,
+      "mean_accepted_length": 1.0434782608695652,
+      "theoretical_tokens_per_step": 1.087272703931759,
+      "num_rounds": 552,
+      "timing": {
+        "samples_s": [
+          1.0999965829541907,
+          1.104280082974583,
+          1.1111884999554604
+        ],
+        "median_s": 1.104280082974583,
+        "iqr_s": 0.011191917001269758,
+        "min_s": 1.0999965829541907,
+        "max_s": 1.1111884999554604,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.8977791786977548
+    },
+    "7": {
+      "acceptance_rate": 0.06976744186046512,
+      "mean_accepted_length": 1.0434782608695652,
+      "theoretical_tokens_per_step": 1.0749999993965647,
+      "num_rounds": 552,
+      "timing": {
+        "samples_s": [
+          1.087275750003755,
+          1.11766487499699,
+          1.0858347079483792
+        ],
+        "median_s": 1.087275750003755,
+        "iqr_s": 0.03183016704861075,
+        "min_s": 1.0858347079483792,
+        "max_s": 1.11766487499699,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.9118199002799295
+    },
+    "8": {
+      "acceptance_rate": 0.061855670103092786,
+      "mean_accepted_length": 1.0434782608695652,
+      "theoretical_tokens_per_step": 1.065934065919936,
+      "num_rounds": 552,
+      "timing": {
+        "samples_s": [
+          1.0877582909306511,
+          1.0928382499841973,
+          1.0884756250306964
+        ],
+        "median_s": 1.0884756250306964,
+        "iqr_s": 0.00507995905354619,
+        "min_s": 1.0877582909306511,
+        "max_s": 1.0928382499841973,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.9108147607046789
+    }
+  },
+  "self_speculative": {
+    "1": {
+      "acceptance_rate": 0.3975609756097561,
+      "mean_accepted_length": 1.3946731234866827,
+      "theoretical_tokens_per_step": 1.3975609756097562,
+      "num_rounds": 413,
+      "timing": {
+        "samples_s": [
+          2.1536192080238834,
+          2.171870000078343,
+          2.1462300829589367
+        ],
+        "median_s": 2.1536192080238834,
+        "iqr_s": 0.025639917119406164,
+        "min_s": 2.1462300829589367,
+        "max_s": 2.171870000078343,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.4603412071416736
+    },
+    "2": {
+      "acceptance_rate": 0.30014025245441794,
+      "mean_accepted_length": 1.591160220994475,
+      "theoretical_tokens_per_step": 1.3902244235978196,
+      "num_rounds": 362,
+      "timing": {
+        "samples_s": [
+          2.9126800410449505,
+          2.920493874931708,
+          2.9167534159496427
+        ],
+        "median_s": 2.9167534159496427,
+        "iqr_s": 0.007813833886757493,
+        "min_s": 2.9126800410449505,
+        "max_s": 2.920493874931708,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.3398983474310692
+    },
+    "3": {
+      "acceptance_rate": 0.21525096525096524,
+      "mean_accepted_length": 1.631728045325779,
+      "theoretical_tokens_per_step": 1.2715571615388161,
+      "num_rounds": 353,
+      "timing": {
+        "samples_s": [
+          3.6263645000290126,
+          3.6040205840254202,
+          3.562471333076246
+        ],
+        "median_s": 3.6040205840254202,
+        "iqr_s": 0.06389316695276648,
+        "min_s": 3.562471333076246,
+        "max_s": 3.6263645000290126,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.2750815770419076
+    },
+    "4": {
+      "acceptance_rate": 0.1720029784065525,
+      "mean_accepted_length": 1.6695652173913043,
+      "theoretical_tokens_per_step": 1.2075519890108353,
+      "num_rounds": 345,
+      "timing": {
+        "samples_s": [
+          3.979227290954441,
+          3.979253542027436,
+          3.99125041696243
+        ],
+        "median_s": 3.979253542027436,
+        "iqr_s": 0.012023126007989049,
+        "min_s": 3.979227290954441,
+        "max_s": 3.99125041696243,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.24914212061996174
+    },
+    "5": {
+      "acceptance_rate": 0.1402769416014449,
+      "mean_accepted_length": 1.6793002915451896,
+      "theoretical_tokens_per_step": 1.1631564035470943,
+      "num_rounds": 343,
+      "timing": {
+        "samples_s": [
+          4.479362374986522,
+          4.43611770903226,
+          4.4837414160138
+        ],
+        "median_s": 4.479362374986522,
+        "iqr_s": 0.047623706981539726,
+        "min_s": 4.43611770903226,
+        "max_s": 4.4837414160138,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.2213260689694016
+    },
+    "6": {
+      "acceptance_rate": 0.11824153612935827,
+      "mean_accepted_length": 1.6842105263157894,
+      "theoretical_tokens_per_step": 1.1340970547314324,
+      "num_rounds": 342,
+      "timing": {
+        "samples_s": [
+          5.0497420829487965,
+          5.044418249977753,
+          5.07718708307948
+        ],
+        "median_s": 5.0497420829487965,
+        "iqr_s": 0.03276883310172707,
+        "min_s": 5.044418249977753,
+        "max_s": 5.07718708307948,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.1963267924698209
+    },
+    "7": {
+      "acceptance_rate": 0.10257529463116544,
+      "mean_accepted_length": 1.689149560117302,
+      "theoretical_tokens_per_step": 1.114299597238292,
+      "num_rounds": 341,
+      "timing": {
+        "samples_s": [
+          5.615193458041176,
+          5.607079832931049,
+          5.636646916973405
+        ],
+        "median_s": 5.615193458041176,
+        "iqr_s": 0.029567084042355418,
+        "min_s": 5.607079832931049,
+        "max_s": 5.636646916973405,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.1765566357336249
+    },
+    "8": {
+      "acceptance_rate": 0.09021113243761997,
+      "mean_accepted_length": 1.689149560117302,
+      "theoretical_tokens_per_step": 1.0991561177085487,
+      "num_rounds": 341,
+      "timing": {
+        "samples_s": [
+          6.155049666995183,
+          6.20892908400856,
+          6.196434709010646
+        ],
+        "median_s": 6.196434709010646,
+        "iqr_s": 0.05387941701337695,
+        "min_s": 6.155049666995183,
+        "max_s": 6.20892908400856,
+        "max_memory_bytes": null
+      },
+      "speedup_vs_target_only": 0.1599951766624039
+    }
+  }
+}
