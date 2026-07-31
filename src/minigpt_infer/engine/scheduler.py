@@ -97,3 +97,21 @@ class Scheduler:
         self.block_manager.free(seq)
         if seq in self.running:
             self.running.remove(seq)
+
+    def cancel_by_id(self, request_id: str) -> bool:
+        """docs/PLAN.md Phase 7 acceptance: a client disconnecting mid-stream
+        must free the sequence's KV blocks immediately, not leak them until
+        some later timeout -- the #1 phantom-OOM cause (see finish()) applies
+        just as much to a cancellation as to a normal completion. Returns
+        True if a matching request was found (running or still waiting)."""
+        for seq in self.running:
+            if seq.request.request_id == request_id:
+                self.finish(seq, "cancelled")
+                return True
+        for seq in list(self.waiting):
+            if seq.request.request_id == request_id:
+                self.waiting.remove(seq)
+                seq.status = SequenceStatus.FINISHED
+                seq.finish_reason = "cancelled"
+                return True
+        return False

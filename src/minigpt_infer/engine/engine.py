@@ -74,11 +74,29 @@ class LLMEngine:
         assert prompt_len <= self.model.cfg.block_size, (
             f"prompt has {prompt_len} tokens > block_size={self.model.cfg.block_size}"
         )
+        # The learned position table has exactly block_size rows (model.py's
+        # own forward() assert). Rejecting an over-length request HERE, with
+        # a clear message, beats discovering it many steps later as an
+        # uncaught AssertionError deep inside step() -- which would otherwise
+        # kill the whole engine (see AsyncEngine._run()'s docstring on why
+        # that's caught defensively too, not just prevented here).
+        max_possible_len = prompt_len + request.sampling_params.max_tokens
+        assert max_possible_len <= self.model.cfg.block_size, (
+            f"prompt_len ({prompt_len}) + max_tokens ({request.sampling_params.max_tokens}) "
+            f"= {max_possible_len} > block_size={self.model.cfg.block_size}; "
+            "this request can never finish without exceeding the position table"
+        )
         self._detokenizers[request.request_id] = IncrementalDetokenizer()
         self.scheduler.add_request(SequenceState(request=request))
 
     def has_unfinished_requests(self) -> bool:
         return self.scheduler.has_work()
+
+    def cancel_request(self, request_id: str) -> bool:
+        """See Scheduler.cancel_by_id -- frees blocks immediately if the
+        request was running or waiting. Also drops its detokenizer state."""
+        self._detokenizers.pop(request_id, None)
+        return self.scheduler.cancel_by_id(request_id)
 
     def step(self) -> list[RequestOutput]:
         batch_seqs, is_prefill = self.scheduler.schedule()

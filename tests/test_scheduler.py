@@ -205,3 +205,39 @@ def test_ensure_capacity_preempts_newest_running_when_pool_exhausted():
     assert [s.request.request_id for s in sched.waiting] == ["new"]
     assert sched.num_preemptions == 1
     assert len(sched.running[0].block_table) == 2  # "old" got the freed block
+
+
+def test_cancel_by_id_frees_blocks_for_a_running_request():
+    bm = BlockManager(num_blocks=10, block_size=4)
+    sched = Scheduler(bm, max_batch_size=10)
+    sched.add_request(_seq("r0", prompt_len=4))
+    sched.schedule()
+    seq = sched.running[0]
+    assert bm.num_free_blocks == 9
+
+    found = sched.cancel_by_id("r0")
+    assert found is True
+    assert bm.num_free_blocks == 10
+    assert sched.running == []
+    assert seq.status is SequenceStatus.FINISHED
+    assert seq.finish_reason == "cancelled"
+
+
+def test_cancel_by_id_removes_a_still_waiting_request():
+    bm = BlockManager(num_blocks=10, block_size=4)
+    sched = Scheduler(bm, max_batch_size=1)  # only 1 admitted, "r1" stays waiting
+    sched.add_request(_seq("r0", prompt_len=4))
+    sched.add_request(_seq("r1", prompt_len=4))
+    sched.schedule()
+    assert [s.request.request_id for s in sched.waiting] == ["r1"]
+
+    found = sched.cancel_by_id("r1")
+    assert found is True
+    assert list(sched.waiting) == []
+    assert bm.num_free_blocks == 9  # r0's allocation untouched
+
+
+def test_cancel_by_id_returns_false_for_unknown_request():
+    bm = BlockManager(num_blocks=10, block_size=4)
+    sched = Scheduler(bm, max_batch_size=10)
+    assert sched.cancel_by_id("does-not-exist") is False

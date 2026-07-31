@@ -327,3 +327,57 @@ rejection residual `max(0, p-q)` collapses to a one-hot vector at the
 target's own argmax regardless of what the draft's distribution `q` looked
 like. `tests/test_spec_decode.py`'s greedy-exactness tests exercise this
 directly against `generation.greedy_generate_cached` across both drafters.
+
+---
+
+## 9. The serving layer: a thread-safe queue is not enough on its own
+
+`engine/async_engine.py` runs `LLMEngine.step()` on a dedicated background
+thread, not the asyncio event loop (`model.forward()` is synchronous and
+CPU/GPU-bound; running it on the loop would starve every other request's
+streaming and every health/metrics scrape for the duration of each step).
+Each request gets its own `queue.Queue`, and `queue.Queue` is already
+thread-safe — but thread-safety of the queue's internals is not the same as
+race-freedom of the *protocol* built on top of it.
+
+**The race**: the original `AsyncEngine.submit()` returned only a
+`request_id`; `stream()` looked the request's queue up by that id in
+`self._queues` on every call. The engine thread pops a finished request's
+queue out of `self._queues` the moment it sees the final output (so a
+long-lived server doesn't accumulate one abandoned queue per completed
+request forever). With a small/fast model, `step()` can produce and finish a
+request *before the async consumer's coroutine has even been scheduled* —
+by the time `stream()` runs its lookup, the queue is already gone, and the
+by-id lookup returns nothing. The generator then silently yields zero items:
+no exception, no empty-list error, just quietly wrong output. This was not a
+hypothetical found by inspection — it reproduced as an empty string from
+`/v1/completions?stream=true` while the non-streaming endpoint on the exact
+same request correctly returned real text, and as an `IndexError` on `events[0]`
+in a chat-streaming test.
+
+**The fix**: `submit()` now returns `(request_id, queue.Queue)` — the queue
+object itself, not just its id — and `stream(request_id, q)` takes that
+queue directly instead of re-deriving it. `queue.Queue.put()` buffers items
+whether or not a consumer has started `get()`-ing yet, so handing over the
+actual object sidesteps the lookup (and the race window around it) entirely:
+there is no longer a point in time where the queue exists but can't be
+found. The lesson generalizes beyond this codebase: a lookup keyed by an id
+that a producer can independently invalidate is a race, even when every
+individual data structure involved is thread-safe — the unsafety was in the
+*protocol* (two threads implicitly agreeing on when a shared key remains
+valid), not in any single object's implementation.
+
+A second, unrelated failure mode was closed the same way engine-side
+assertion violations always have been in this project (Phase 1's
+`.item()`/host-sync trap, Phase 7's own admission-time check): a request
+whose `prompt_len + max_tokens` exceeds the model's `block_size` can never
+finish (`model.py`'s position-table bound), and previously would only fail
+deep inside the background thread's `step()`, with no handler — silently
+killing the thread and hanging every open `stream()`'s `queue.get()`
+forever, client included. `LLMEngine.add_request()` now asserts this at
+admission time (a clean 400 from `server/api.py`, before any thread
+involvement), and `AsyncEngine._run()` additionally wraps `step()` in a
+`try/except` that, on any unexpected exception, propagates it as the
+exception object itself to every pending queue and stops the thread —
+turning "hangs forever" into "every open stream raises `EngineCrashedError`
+immediately," for whatever future failure mode this doesn't anticipate.
