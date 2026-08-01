@@ -1,6 +1,6 @@
 {
   "id": "abdullahrasheed4500/mini-gpt-inference-bench-hardware",
-  "title": "mini-gpt-inference bench_hardware (P9)",
+  "title": "mini-gpt-inference-bench-hardware",
   "code_file": "kaggle_entry.py",
   "language": "python",
   "kernel_type": "script",

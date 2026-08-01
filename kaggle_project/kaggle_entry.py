@@ -17,11 +17,16 @@ HF_TOKEN is injected as a literal `os.environ[...] = ...` line prepended to
 this script's source immediately before pushing the rendered copy -- never
 committed to git, never written to disk in this repo.
 
-No Triton, no torch reinstall: unlike Project A's DDP training kernel,
-bench_hardware.py only does plain PyTorch eager decode -- no
-`torchrun`, no multi-GPU, and no Triton kernels (docs/PLAN.md §3: Triton on
-sm60 will likely fail to compile, but nothing here imports it), so Kaggle's
-base-image torch works as-is with no version pinning needed.
+Torch reinstall required, same as Project A's DDP training kernel: Kaggle's
+current base image ships torch 2.10.0+cu128, whose CUDA build has DROPPED
+sm_60 (Pascal/P100) entirely -- confirmed by a real run here failing with
+`CUDA error: no kernel image is available for execution on the device` on
+the very first `torch.zeros(..., device="cuda")` call, not just on Triton
+(docs/PLAN.md §3 only predicted Triton would fail on sm60; plain eager ops
+failing too is a stricter, newer problem than the plan anticipated). Fixed
+exactly as mini-gpt-ddp/kaggle_project/kaggle_entry.py already fixed it:
+force-reinstall torch 2.6.0's cu118 build, whose TORCH_CUDA_ARCH_LIST still
+includes 6.0.
 """
 
 import os
@@ -42,9 +47,12 @@ def main() -> None:
         run(["git", "clone", "--depth", "1", REPO_URL, WORKDIR])
     os.chdir(WORKDIR)
 
+    run(["pip", "install", "-q", "--force-reinstall", "torch==2.6.0",
+         "--index-url", "https://download.pytorch.org/whl/cu118"])
     run(["python", "-c",
          "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, "
-         "'gpu', torch.cuda.get_device_name(0), 'cap', torch.cuda.get_device_capability(0))"])
+         "'gpu', torch.cuda.get_device_name(0), 'cap', torch.cuda.get_device_capability(0), "
+         "'archs', torch.cuda.get_arch_list())"])
     run(["pip", "install", "-q", "-e", "."])
     run(["python", "-m", "bench.bench_hardware", "--no-plot"])
 

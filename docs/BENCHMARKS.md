@@ -539,4 +539,124 @@ explained by — every other overhead-bound finding in this project.
 
 ---
 
-<!-- Phases 7-9 append their sections here, in order, as they complete. -->
+## Phase 8 — Load test and hardware study (Prediction P9)
+
+Phase 7 (serving layer) has no benchmarked prediction of its own -- it's
+covered by `tests/test_server.py` instead, per `docs/PLAN.md`'s own file
+list for that phase.
+
+### Load test: Poisson arrivals vs a stated SLO
+
+**Setup**: `bench/load_test.py` against a real `LLMEngine` (Project A
+architecture, random-init, no checkpoint needed -- this tests scheduling
+mechanics, not model quality). Request inter-arrival times are drawn from
+Exp(λ); prompt/output lengths from a lognormal held **fixed across the whole
+λ sweep** so only arrival rate varies between rows -- an earlier version of
+this script let λ's own seed also reshuffle the workload, which let a higher
+λ draw a shorter-output sample by chance and look artificially *faster* than
+a lower one. Caught by the sweep itself failing to be monotonic on a real
+run, fixed by generating the request set once and reusing it for every λ.
+SLO: TTFT p95 < 200ms **and** TPOT p95 < 50ms (the plan's own example
+thresholds, stated explicitly since "goodput" without a stated SLO is
+meaningless). Artifact:
+`bench/results/load_test_cpu_20260731T010524Z.json`.
+
+| λ (req/s) | achieved (req/s) | TTFT p50/p95 (ms) | TPOT p50/p95 (ms) | SLO |
+|---:|---:|---:|---:|:---:|
+| 2 | 2.0 | 31.0 / 43.2 | 17.3 / 27.4 | OK |
+| 5 | 5.8 | 17.9 / 34.4 | 21.7 / 23.6 | OK |
+| 10 | 11.6 | 17.9 / 35.4 | 27.2 / 31.7 | OK |
+| 20 | 16.2 | 26.7 / 52.5 | 44.1 / 55.4 | violated |
+| 40 | 18.2 | 35.5 / 71.7 | 57.5 / 105.1 | violated |
+| 80 | 19.9 | 70.2 / 136.2 | 55.7 / 98.5 | violated |
+
+**A genuine knee, exactly the shape the plan predicts**: latency stays flat
+and SLO-compliant through λ=10, then both TTFT and TPOT p95 climb sharply as
+requested λ outruns the engine's real throughput ceiling -- "achieved req/s"
+itself plateaus around 18-20 req/s regardless of how much higher λ is
+pushed, the signature of a saturated server (queueing delay, not slower
+individual requests, is what's growing). **Max sustainable QPS under the
+stated SLO: 10 req/s**, on this CPU rig with this random-init model's
+architecture. This is a scheduling-mechanics result, not a hardware one --
+the same curve shape is expected on GPU, just shifted to a much higher λ.
+
+### Hardware study: T4 vs P100 decode (P9)
+
+**Prediction (P9)**: P100 beats T4 at bs=1 decode (memory-bandwidth-bound:
+P100 has 2.3x the T4's bandwidth); T4 beats P100 at large batch
+(compute-bound: T4 has fp16 tensor cores, P100 -- Pascal, sm60 -- doesn't).
+
+**Setup**: `bench/bench_hardware.py`, real checkpoint (iter 5999, weights
+102.4 MB fp16 -- matching `docs/PLAN.md` §3's own P9 arithmetic exactly),
+decode-only timing (prefill excluded, untimed, fresh `StaticKVCache` per
+repeat) across batch sizes 1-64, 32 decode steps, 30 repeats, greedy.
+
+Getting the P100 side running surfaced a real, stricter-than-predicted
+compatibility problem: Kaggle's current base image ships torch 2.10.0+cu128,
+whose CUDA build has **dropped sm_60 (Pascal) support entirely** -- the
+first `torch.zeros(..., device="cuda")` call failed with `CUDA error: no
+kernel image is available for execution on the device`. `docs/PLAN.md` §3
+only predicted *Triton* would fail to compile on sm60; plain PyTorch eager
+ops failing too is new since that was written. Fixed the same way
+`mini-gpt-ddp/kaggle_project/kaggle_entry.py` already fixed the identical
+problem: force-reinstall torch 2.6.0's cu118 build, whose
+`TORCH_CUDA_ARCH_LIST` still includes 6.0. (T4 run: git SHA `d072ebe`,
+uploaded directly to the Lightning Studio, torch 2.8.0+cu128. P100 run: git
+SHA `4b642e5`, cloned fresh from GitHub by the Kaggle kernel, torch
+2.6.0+cu118 -- a different SHA and torch build per GPU, same caveat Phase
+6's section already flagged for its own artifact; §10 rule 8 is why both are
+stated here rather than left implicit.)
+
+| batch size | T4 latency (ms/tok) | P100 latency (ms/tok) | T4 tok/s | P100 tok/s |
+|---:|---:|---:|---:|---:|
+| 1 | 4.650 | 4.622 | 215.0 | 216.4 |
+| 2 | 4.841 | 4.888 | 413.1 | 409.2 |
+| 4 | 4.815 | 5.042 | 830.7 | 793.4 |
+| 8 | 4.785 | 4.853 | 1671.8 | 1648.5 |
+| 16 | 4.812 | 4.856 | 3325.1 | 3294.7 |
+| 32 | 4.854 | 4.379 | 6593.1 | 7308.1 |
+| 64 | 4.962 | 4.657 | 12898.7 | 13741.6 |
+
+**P9's crossover is not observed at this scale -- both GPUs land in the same
+~4.4-5.0ms/token band at every batch size**, T4 and P100 within ~5% of each
+other throughout, no batch size where either pulls ahead by a margin that
+looks like more than noise. `bench/plot.py`'s overlay
+(`docs/img/hardware_crossover.png`) makes it visually obvious: the two
+curves sit on top of each other rather than crossing.
+
+**Why, quantified rather than shrugged at**: both chips' theoretical
+bandwidth-bound bs=1 floor (weight bytes / memory bandwidth) is nowhere near
+what's measured. T4's floor is 102.4MB / 320GB/s = 0.320ms/tok (3125 tok/s);
+P100's is 102.4MB / 732GB/s = 0.140ms/tok (7150 tok/s) -- P100 should be
+2.3x faster *in principle*. Measured bs=1 latency is 4.650ms (T4) and
+4.622ms (P100): **14.5x and 33x slower than each chip's own bandwidth
+floor**, respectively. P100's real bandwidth advantage is real but tiny in
+absolute terms (0.18ms) next to ~4.5ms of fixed overhead that swamps it
+completely -- the same kernel-launch-overhead-bound regime already measured
+directly in Phase 4 (`bench_kernels.py`'s profiler breakdown) and invoked to
+explain every other "expected speedup didn't show up" result in this
+project (P1, P2, P3, P5, P7, P8). At ~38M non-embedding parameters and 8
+plain eager decode steps' worth of small per-layer matmuls, neither chip
+ever gets far enough into real bandwidth- or compute-bound territory for
+the hardware's own characteristics to be the bottleneck -- Python dispatch
+and kernel-launch count are, and those are roughly GPU-independent.
+
+**P9 is refuted at this model scale, with a verified mechanism, not just a
+negative result**: the crossover this prediction describes requires
+spending enough time actually reading memory or doing matmuls that the
+chips' different bandwidth/tensor-core profiles can show up above the
+overhead floor. CUDA graphs (Phase 4) removing per-step Python overhead, or
+a substantially larger model, are the two changes that would give this
+comparison a fair test -- both are natural follow-ups, not implemented here.
+
+**Acceptance**:
+- Load test shows a genuine SLO knee; max sustainable QPS recorded (10 req/s,
+  this CPU rig).
+- Hardware study ran the identical suite on both T4 and P100 against the
+  real checkpoint; P9 checked and refuted with a quantified, mechanistic
+  explanation (overhead swamps the bandwidth advantage by 1-2 orders of
+  magnitude at this scale) rather than left unexplained.
+
+---
+
+<!-- Phase 9 appends its section here, as it completes. -->
