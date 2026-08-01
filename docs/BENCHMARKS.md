@@ -52,11 +52,14 @@ exactly the phenomenon Prediction P2 names directly (bs=1 decode is
 overhead-, not math-, dominated) — P1 and P2 are entangled, and P2 can only be
 properly measured on the target GPU (T4), not CPU.
 
-**Status**: keeping this CPU result as the honest, currently-reproducible
-number (§10 rule 8: always label the hardware). A T4 re-run via Lightning AI
-is planned for Phase 4/8 alongside the CUDA-graph and hardware-study work,
-where P1 will be re-evaluated on the actual target hardware described in
-`docs/PLAN.md` §3.
+**Status**: a dedicated T4 re-run of P1 itself never happened -- Phase 4's
+real-hardware time went to P2/P3 (the more targeted overhead/CUDA-graph
+measurements this same bs=1-decode story is really about), and Phase 8's
+Lightning credit ran out before a P1-specific re-run could be scheduled.
+The CPU number above (3.43x, directionally confirmed, magnitude short of
+10-40x) stands as the reported result for P1; P2 and P3 below give the real
+T4-side answer to *why* naive-vs-cached decode looks the way it does on
+this hardware, which is the more informative number anyway.
 
 ---
 
@@ -101,10 +104,11 @@ absolute terms (fixed Python/thread-pool startup cost dominates at that
 scale, not the model's actual compute) and shouldn't be read as part of the
 trend.
 
-**Status**: qualitative shape confirmed (linear-then-bend); the *exact* knee
-location is hardware-specific and will be re-measured on T4 in Phase 8's
-hardware study, per `docs/PLAN.md` §10 rule 8 (never compare bend points
-across hardware without labeling it).
+**Status**: qualitative shape confirmed (linear-then-bend) on CPU. A T4
+re-run of the exact knee location didn't happen -- Phase 8's Lightning
+credit ran out before it could be scheduled (see Phase 8's own section) --
+so the bend point reported here is CPU-specific and should not be read as
+the T4 number `docs/PLAN.md` §10 rule 8 warns against conflating.
 
 **Acceptance**: batch invariance verified in `tests/test_batching.py` — 8
 ragged-length prompts generated together produce byte-identical greedy output
@@ -169,9 +173,12 @@ and at this scale that cost isn't yet swamped by the actual attention
 compute the way it would be on a real workload.
 
 **Status**: correctness (not performance) was this phase's hard gate — see
-Acceptance below, fully met. Performance is re-measured on the target T4 in
-Phase 8's hardware study, where the compute-per-step is large enough for the
-mechanism's real advantage to plausibly show through the overhead.
+Acceptance below, fully met. A T4 re-run of P5/P6's performance numbers
+didn't happen -- Phase 8's Lightning credit ran out before it could be
+scheduled -- so whether continuous/paged batching's real advantage clears
+the engine's own overhead on GPU remains an open question the CPU numbers
+above can't answer; Phase 8's hardware study measured decode-only latency
+across batch sizes instead (P9), which is a related but distinct question.
 
 **Acceptance**:
 - Paged output == static-cache output, exactly, greedy: verified for 20
